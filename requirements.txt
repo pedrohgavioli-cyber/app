@@ -1,3 +1,4 @@
+setuptools
 investpy
 pandas
 numpy
