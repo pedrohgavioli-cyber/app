@@ -25,4 +25,5 @@ start = st.button('Iniciar')
 
 if start:
     st.write(f'Jogando a moeda {num_tenativas} vezes...')
+    mean = jogar_moeda(num_tenativas)
 
