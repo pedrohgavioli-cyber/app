@@ -1,8 +1,5 @@
-pandas
-scipy
-streamlit
 investpy
+pandas
 numpy
-warnings
-datetime
+streamlit
 plotly
