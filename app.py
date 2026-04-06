@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import streamlit as st
 import plotly.express as px
 
-# ---------------------------------------------
 # Utilidades
 # ---------------------------------------------
 
