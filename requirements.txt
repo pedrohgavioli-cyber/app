@@ -1,5 +1,5 @@
 setuptools
-tvdatafeed
+yfinance
 pandas
 numpy
 streamlit
