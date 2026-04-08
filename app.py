@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import investpy
+import tvdatafeed as tv
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -37,7 +37,7 @@ def get_crypto_info_from_symbol(symbol: str) -> str | None:
     if not symbol:
         return None
     try:
-        search_result = investpy.search_cryptos(by='symbol', value=symbol.upper())
+        search_result = tv.search(symbol, exchange="CRYPTO", filter="all")
         if isinstance(search_result, pd.DataFrame) and not search_result.empty:
             return str(search_result['name'].iloc[0])
     except Exception:
@@ -69,24 +69,15 @@ def fetch_market_data(portfolio_assets: list[dict], benchmark_info: dict):
                 country = asset.get('Country')
                 if not country:
                     raise ValueError("País não informado para ação.")
-                df_recent = investpy.get_stock_recent_data(stock=ticker, country=country)
-                hist_download = investpy.get_stock_historical_data(
-                    stock=ticker,
-                    country=country,
-                    from_date=start_date_str,
-                    to_date=end_date_str
-                )
+                df_recent = tv.get_stock_data(symbol=ticker, exchange=country, interval="1d", n_bars=1)
+                hist_download = tv.get_stock_data(symbol=ticker, exchange=country, interval="1d", n_bars=365)
             elif asset_type == 'Criptoativo':
                 crypto_name = get_crypto_info_from_symbol(ticker)
                 if not crypto_name:
                     st.warning(f"Não foi possível mapear símbolo cripto: {ticker}.")
                     continue
-                df_recent = investpy.get_crypto_recent_data(crypto=crypto_name)
-                hist_download = investpy.get_crypto_historical_data(
-                    crypto=crypto_name,
-                    from_date=start_date_str,
-                    to_date=end_date_str
-                )
+                df_recent = tv.get_crypto_data(symbol=crypto_name, exchange="CRYPTO", interval="1d", n_bars=1)
+                hist_download = tv.get_crypto_data(symbol=crypto_name, exchange="CRYPTO", interval="1d", n_bars=365)
             else:
                 st.warning(f"Tipo de ativo desconhecido: {asset_type}")
                 continue
@@ -105,11 +96,11 @@ def fetch_market_data(portfolio_assets: list[dict], benchmark_info: dict):
     # Benchmark (se falhar, segue sem ele)
     try:
         if benchmark_info and benchmark_info.get('ticker') and benchmark_info.get('country'):
-            hist_benchmark = investpy.get_index_historical_data(
-                index=benchmark_info['ticker'],
-                country=benchmark_info['country'],
-                from_date=start_date_str,
-                to_date=end_date_str
+            hist_benchmark = tv.get_index_data(
+                symbol=benchmark_info['ticker'],
+                exchange=benchmark_info['country'],
+                interval="1d",
+                n_bars=365
             )
             if isinstance(hist_benchmark, pd.DataFrame) and not hist_benchmark.empty:
                 s_bench = hist_benchmark['Close'].rename(benchmark_info['ticker'])
@@ -149,7 +140,7 @@ class PortfolioManager:
                 country = asset_info.get('Country')
                 if not country:
                     raise ValueError("País é obrigatório para Ação.")
-                _ = investpy.get_stock_recent_data(stock=ticker, country=country)
+                _ = tv.get_stock_data(symbol=ticker, exchange=country, interval="1d", n_bars=1)
             elif asset_type == 'Criptoativo':
                 if not get_crypto_info_from_symbol(ticker):
                     raise ValueError("Símbolo cripto não encontrado.")

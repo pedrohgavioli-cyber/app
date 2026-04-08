@@ -1,5 +1,5 @@
 setuptools
-investpy
+tvdatafeed
 pandas
 numpy
 streamlit
