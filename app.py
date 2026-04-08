@@ -27,6 +27,44 @@ def _ensure_numeric(df, cols):
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
+# --- NOVA FUNÇÃO: busca preço na data/hora informada ---
+def get_price_at_datetime(ticker: str, dt: datetime, asset_type: str = 'Ação', country: str | None = None) -> float | None:
+    """Tenta obter o preço do ativo na data/hora indicada.
+    - Para intraday (últimos 7 dias) busca intervalo 1m e retorna o close mais próximo.
+    - Para datas mais antigas busca o close diário do dia informado.
+    Retorna None se não encontrar."""
+    if not ticker or not isinstance(dt, datetime):
+        return None
+
+    try:
+        query_ticker = ticker
+        if asset_type == 'Criptoativo':
+            crypto_name = get_crypto_info_from_symbol(ticker)
+            if not crypto_name:
+                return None
+            query_ticker = crypto_name
+
+        now_dt = _now()
+        # intraday disponivel por yfinance tipicamente para últimos ~7 dias
+        if (now_dt - dt) <= timedelta(days=7):
+            start = (dt - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+            end = (dt + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+            df = yf.download(query_ticker, start=start, end=end, interval="1m", progress=False)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                idx = pd.to_datetime(df.index)
+                pos = idx.get_indexer([dt], method="nearest")[0]
+                return _as_float(df['Close'].iloc[pos], None)
+        # fallback diário
+        start = dt.date().strftime("%Y-%m-%d")
+        end = (dt.date() + timedelta(days=1)).strftime("%Y-%m-%d")
+        df = yf.download(query_ticker, start=start, end=end, interval="1d", progress=False)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            # pega o fechamento do dia (última linha)
+            return _as_float(df['Close'].iloc[-1], None)
+    except Exception:
+        return None
+    return None
+
 # ---------------------------------------------
 # Lógica de dados (com cache)
 # ---------------------------------------------
@@ -271,6 +309,22 @@ def processar_adicao_ativo():
         'Preço Compra': st.session_state.add_asset_price,
         'Quantidade': st.session_state.add_asset_quantity
     }
+
+    # Se usuário não forneceu preço (ou forneceu 0), tentamos importar a partir da data/hora
+    try:
+        price_provided = _as_float(asset_info['Preço Compra'], np.nan)
+        if not np.isfinite(price_provided) or price_provided <= 0:
+            dt_purchase = datetime.combine(
+                st.session_state.add_asset_date,
+                st.session_state.add_asset_time
+            )
+            fetched_price = get_price_at_datetime(asset_info['Ticker'], dt_purchase, asset_info['Type'], asset_info.get('Country'))
+            if fetched_price is not None:
+                asset_info['Preço Compra'] = fetched_price
+    except Exception:
+        # falhou ao buscar preço: seguirá com o valor informado (ou 0 => validação irá bloquear)
+        pass
+
     manager = PortfolioManager(st.session_state.portfolio)
     if manager.add_asset(asset_info):
         st.session_state["add_asset_name"] = ""
@@ -288,7 +342,10 @@ if st.session_state.add_asset_type == 'Ação':
     country = st.sidebar.selectbox("País da Bolsa", options=SUPPORTED_COUNTRIES, key="add_asset_country")
 
 data_compra = st.sidebar.date_input("Data de Compra", value=_now().date(), key="add_asset_date")
-preco_compra = st.sidebar.number_input("Preço de Compra", min_value=0.000001, format="%.6f", key="add_asset_price")
+# nova entrada de hora para permitir import de preço intraday
+hora_compra = st.sidebar.time_input("Hora da Compra (opcional, usada para buscar preço intraday)", value=_now().time(), key="add_asset_time")
+
+preco_compra = st.sidebar.number_input("Preço de Compra (deixe 0 para importar automaticamente)", min_value=0.0, format="%.6f", key="add_asset_price")
 quantidade = st.sidebar.number_input("Quantidade", min_value=0.000001, format="%.6f", key="add_asset_quantity")
 
 st.sidebar.button(
