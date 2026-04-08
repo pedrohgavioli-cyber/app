@@ -27,64 +27,76 @@ def _ensure_numeric(df, cols):
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
-# --- NOVA FUNÇÃO: busca preço na data/hora informada ---
-def get_price_at_datetime(ticker: str, dt: datetime, asset_type: str = 'Ação', country: str | None = None) -> float | None:
-    """Tenta obter o preço do ativo na data/hora indicada.
-    - Para intraday (últimos 7 dias) busca intervalo 1m e retorna o close mais próximo.
-    - Para datas mais antigas busca o close diário do dia informado.
-    Retorna None se não encontrar."""
-    if not ticker or not isinstance(dt, datetime):
+# mapear sufixos comuns por país (para tickers de bolsa)
+EXCHANGE_SUFFIX = {
+    'brazil': '.SA',
+    'united states': '',
+    'canada': '.TO',
+    'united kingdom': '.L',
+    'germany': '.DE'
+}
+
+@st.cache_data(ttl=3600)
+def get_crypto_info_from_symbol(symbol: str) -> str | None:
+    """Resolve o símbolo negociável da cripto a partir do símbolo (ex.: BTC -> 'BTC-USD' ou 'BTC-USD')."""
+    if not symbol:
         return None
-
     try:
-        query_ticker = ticker
-        if asset_type == 'Criptoativo':
-            crypto_name = get_crypto_info_from_symbol(ticker)
-            if not crypto_name:
-                return None
-            query_ticker = crypto_name
-
-        now_dt = _now()
-        # intraday disponivel por yfinance tipicamente para últimos ~7 dias
-        if (now_dt - dt) <= timedelta(days=7):
-            start = (dt - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
-            end = (dt + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
-            df = yf.download(query_ticker, start=start, end=end, interval="1m", progress=False)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                idx = pd.to_datetime(df.index)
-                pos = idx.get_indexer([dt], method="nearest")[0]
-                return _as_float(df['Close'].iloc[pos], None)
-        # fallback diário
-        start = dt.date().strftime("%Y-%m-%d")
-        end = (dt.date() + timedelta(days=1)).strftime("%Y-%m-%d")
-        df = yf.download(query_ticker, start=start, end=end, interval="1d", progress=False)
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            # pega o fechamento do dia (última linha)
-            return _as_float(df['Close'].iloc[-1], None)
+        res = yf.search(symbol, exchange="CRYPTO", filter="all")
+        if isinstance(res, pd.DataFrame) and not res.empty:
+            # usar a coluna 'symbol' (ticker negociável), não 'name'
+            return str(res['symbol'].iloc[0])
     except Exception:
         return None
     return None
 
-# ---------------------------------------------
-# Lógica de dados (com cache)
-# ---------------------------------------------
+def _apply_country_suffix(ticker: str, country: str | None) -> str:
+    """Aplica sufixo por país quando apropriado."""
+    if not country:
+        return ticker
+    suffix = EXCHANGE_SUFFIX.get(country.lower(), '')
+    return ticker + suffix if suffix and not ticker.endswith(suffix) else ticker
 
-@st.cache_data(ttl=3600)
-def get_crypto_info_from_symbol(symbol: str) -> str | None:
-    """Resolve o 'name' da cripto a partir do símbolo (ex.: BTC -> 'bitcoin')."""
-    if not symbol:
+def get_price_at_datetime(ticker: str, dt: datetime, asset_type: str = 'Ação', country: str | None = None) -> float | None:
+    """Obtem preço mais próximo para a data/hora informada.
+    - Tenta 1m intraday para últimos ~7 dias.
+    - Caso contrário, pega fechamento diário do dia."""
+    if not ticker or not isinstance(dt, datetime):
         return None
+
     try:
-        search_result = yf.search(symbol, exchange="CRYPTO", filter="all")
-        if isinstance(search_result, pd.DataFrame) and not search_result.empty:
-            return str(search_result['name'].iloc[0])
+        query = ticker
+        if asset_type == 'Criptoativo':
+            mapped = get_crypto_info_from_symbol(ticker)
+            if not mapped:
+                return None
+            query = mapped
+        else:
+            query = _apply_country_suffix(ticker, country)
+
+        now_dt = _now()
+        # intraday (últimos ~7 dias)
+        if (now_dt - dt) <= timedelta(days=7):
+            start_dt = dt - timedelta(minutes=15)
+            end_dt = dt + timedelta(minutes=15)
+            df = yf.Ticker(query).history(start=start_dt, end=end_dt, interval="1m", actions=False)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                idx = pd.to_datetime(df.index)
+                pos = idx.get_indexer([dt], method="nearest")[0]
+                return _as_float(df['Close'].iloc[pos], None)
+        # fallback diário: pegar fechamento do dia
+        start_day = dt.date()
+        end_day = start_day + timedelta(days=1)
+        df = yf.Ticker(query).history(start=start_day, end=end_day, interval="1d", actions=False)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return _as_float(df['Close'].iloc[-1], None)
     except Exception:
         return None
     return None
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_market_data(portfolio_assets: list[dict], benchmark_info: dict):
-    """Baixa preços atuais e históricos (últimos 365 dias) para ativos e benchmark."""
+    """Baixa preços atuais e históricos (último ano) para ativos e benchmark."""
     if not portfolio_assets:
         return {}, None
 
@@ -93,53 +105,43 @@ def fetch_market_data(portfolio_assets: list[dict], benchmark_info: dict):
 
     end_date_dt = _now()
     start_date_dt = end_date_dt - timedelta(days=365)
-    end_date_str = end_date_dt.strftime('%d/%m/%Y')
-    start_date_str = start_date_dt.strftime('%d/%m/%Y')
-
+    # usar objetos datetime/ date diretamente com yfinance
     for asset in portfolio_assets:
         try:
             asset_type = asset.get('Type', 'Ação')
-            ticker = asset.get('Ticker')
+            ticker = (asset.get('Ticker') or "").upper()
             if not ticker:
                 continue
 
-            if asset_type == 'Ação':
-                country = asset.get('Country')
-                if not country:
-                    raise ValueError("País não informado para ação.")
-                df_recent = yf.download(ticker, start=start_date_str, end=end_date_str, period="1d")
-                hist_download = yf.download(ticker, start=start_date_str, end=end_date_str, period="1y")
-            elif asset_type == 'Criptoativo':
-                crypto_name = get_crypto_info_from_symbol(ticker)
-                if not crypto_name:
+            if asset_type == 'Criptoativo':
+                query = get_crypto_info_from_symbol(ticker)
+                if not query:
                     st.warning(f"Não foi possível mapear símbolo cripto: {ticker}.")
                     continue
-                df_recent = yf.download(crypto_name, start=start_date_str, end=end_date_str, period="1d")
-                hist_download = yf.download(crypto_name, start=start_date_str, end=end_date_str, period="1y")
             else:
-                st.warning(f"Tipo de ativo desconhecido: {asset_type}")
-                continue
+                country = asset.get('Country')
+                query = _apply_country_suffix(ticker, country)
 
-            if isinstance(df_recent, pd.DataFrame) and not df_recent.empty:
-                current_prices[ticker] = _as_float(df_recent['Close'].iloc[-1])
-
-            if isinstance(hist_download, pd.DataFrame) and not hist_download.empty:
-                s = hist_download['Close'].rename(ticker)
+            # obter histórico (1d) e preço atual (último close)
+            hist = yf.Ticker(query).history(start=start_date_dt, end=end_date_dt, interval="1d", actions=False)
+            if isinstance(hist, pd.DataFrame) and not hist.empty:
+                s = hist['Close'].rename(ticker)
                 s.index = pd.to_datetime(s.index)
                 hist_data_list.append(s)
+                current_prices[ticker] = _as_float(hist['Close'].iloc[-1])
+
         except Exception as e:
             st.warning(f"Falha ao obter dados para {asset.get('Ticker')}: {e}")
             continue
 
-    # Benchmark (se falhar, segue sem ele)
+    # benchmark
     try:
-        if benchmark_info and benchmark_info.get('ticker') and benchmark_info.get('country'):
-            hist_benchmark = yf.download(
-                benchmark_info['ticker'], start=start_date_str, end=end_date_str, period="1y"
-            )
-
-            if isinstance(hist_benchmark, pd.DataFrame) and not hist_benchmark.empty:
-                s_bench = hist_benchmark['Close'].rename(benchmark_info['ticker'])
+        if benchmark_info and benchmark_info.get('ticker'):
+            bench_tkr = benchmark_info['ticker']
+            bench_query = _apply_country_suffix(bench_tkr, benchmark_info.get('country'))
+            hist_bench = yf.Ticker(bench_query).history(start=start_date_dt, end=end_date_dt, interval="1d", actions=False)
+            if isinstance(hist_bench, pd.DataFrame) and not hist_bench.empty:
+                s_bench = hist_bench['Close'].rename(bench_tkr)
                 s_bench.index = pd.to_datetime(s_bench.index)
                 hist_data_list.append(s_bench)
     except Exception as e:
@@ -176,9 +178,13 @@ class PortfolioManager:
                 country = asset_info.get('Country')
                 if not country:
                     raise ValueError("País é obrigatório para Ação.")
-                _ = yf.get_stock_data(symbol=ticker, exchange=country, interval="1d", n_bars=1)
+                query = _apply_country_suffix(ticker, country)
+                df = yf.Ticker(query).history(period="5d", interval="1d", actions=False)
+                if df is None or df.empty:
+                    raise ValueError("Ticker não retornou dados (verifique sufixo/país).")
             elif asset_type == 'Criptoativo':
-                if not yf.get_crypto_info(symbol=ticker):
+                mapped = get_crypto_info_from_symbol(ticker)
+                if not mapped:
                     raise ValueError("Símbolo cripto não encontrado.")
             else:
                 raise ValueError(f"Tipo de ativo inválido: {asset_type}")
