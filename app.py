@@ -463,7 +463,7 @@ def build_sidebar():
     st.sidebar.date_input("Data de Compra", value=_now().date(), key="add_asset_date")
     st.sidebar.time_input("Hora da Compra (opcional)", value=_now().time(), key="add_asset_time")
     st.sidebar.number_input("Preço Unitário (Deixe 0 para auto-preencher)", min_value=0.0, format="%.6f", key="add_asset_price")
-    st.sidebar.number_input("Quantidade de Cotas", min_value=0.000001, format="%.6f", key="add_asset_quantity")
+    st.sidebar.number_input("Quantidade de Cotas", min_value=0.0, format="%.6f", key="add_asset_quantity")
     
     st.sidebar.button("➕ Adicionar Ativo", on_click=processar_adicao_ativo, use_container_width=True)
 
